@@ -8,6 +8,7 @@
 
 using namespace std;
 
+// He co so 2^32
 const uint64_t BASE = 0x100000000ULL;
 
 class BigInt {
@@ -47,11 +48,46 @@ public:
         }
         return false;
     }
-
     bool operator>(const BigInt& other) const { return other < *this; }
     bool operator<=(const BigInt& other) const { return !(*this > other); }
     bool operator>=(const BigInt& other) const { return !(*this < other); }
     bool operator==(const BigInt& other) const { return limbs == other.limbs; }
+
+    BigInt operator+(const BigInt& other) const {
+        BigInt res;
+        size_t n = max(limbs.size(), other.limbs.size());
+        res.limbs.resize(n);
+        uint64_t carry = 0;
+        for (size_t i = 0; i < n; i++) {
+            uint64_t sum = carry;
+            if (i < limbs.size()) sum += limbs[i];
+            if (i < other.limbs.size()) sum += other.limbs[i];
+            res.limbs[i] = static_cast<uint32_t>(sum & 0xFFFFFFFF);
+            carry = sum >> 32;
+        }
+        if (carry) res.limbs.push_back(static_cast<uint32_t>(carry));
+        return res;
+    }
+
+    BigInt operator-(const BigInt& other) const {
+        BigInt res;
+        res.limbs.resize(limbs.size());
+        int64_t borrow = 0;
+        for (size_t i = 0; i < limbs.size(); i++) {
+            int64_t sub = limbs[i];
+            if (i < other.limbs.size()) sub -= other.limbs[i];
+            sub -= borrow;
+            if (sub < 0) {
+                sub += BASE;
+                borrow = 1;
+            } else {
+                borrow = 0;
+            }
+            res.limbs[i] = static_cast<uint32_t>(sub);
+        }
+        res.normalize();
+        return res;
+    }
 
     BigInt operator*(const BigInt& other) const {
         if (isZero() || other.isZero()) return BigInt(0);
@@ -74,26 +110,6 @@ public:
     void shiftLeft32() {
         if (isZero()) return;
         limbs.insert(limbs.begin(), 0);
-    }
-    
-    BigInt operator-(const BigInt& other) const {
-        BigInt res;
-        res.limbs.resize(limbs.size());
-        int64_t borrow = 0;
-        for (size_t i = 0; i < limbs.size(); i++) {
-            int64_t sub = limbs[i];
-            if (i < other.limbs.size()) sub -= other.limbs[i];
-            sub -= borrow;
-            if (sub < 0) {
-                sub += BASE;
-                borrow = 1;
-            } else {
-                borrow = 0;
-            }
-            res.limbs[i] = static_cast<uint32_t>(sub);
-        }
-        res.normalize();
-        return res;
     }
 
     BigInt operator%(const BigInt& divisor) const {
@@ -129,14 +145,10 @@ public:
 };
 
 
-// chuyen chuoi hex little-endian thanh BigInt
 BigInt parseHexLittleEndian(string s) {
-    // dao nguoc chuoi truoc
     reverse(s.begin(), s.end());
-    
     BigInt res;
     int len = s.length();
-    // cat chuoi ra tung doan 8 ky tu de xu ly
     for (int i = len; i > 0; i -= 8) {
         int start = max(0, i - 8);
         int count = i - start;
@@ -148,43 +160,38 @@ BigInt parseHexLittleEndian(string s) {
     return res;
 }
 
-// chuyen BigInt thanh chuoi hex roi dao nguoc lai 
 string toHexLittleEndianString(const BigInt& n) {
     if (n.isZero()) return "0";
-
     stringstream ss;
-    // chuyen so sang hex binh thuong
     ss << hex << uppercase << n.limbs.back();
     for (int i = (int)n.limbs.size() - 2; i >= 0; i--) {
         ss << setfill('0') << setw(8) << n.limbs[i];
     }
-
     string s = ss.str();
-    // dao nguoc chuoi de tra ve dang little-endian
     reverse(s.begin(), s.end());
     return s;
 }
 
-// ham tinh luy thua modulo: base^exp % mod
 BigInt power(BigInt base, BigInt exp, BigInt mod) {
     BigInt res(1);
     base = base % mod;
-    
-    // duyet qua tung bit cua so mu exp
     for (size_t i = 0; i < exp.limbs.size(); i++) {
         uint32_t limb = exp.limbs[i];
         for (int bit = 0; bit < 32; bit++) {
-            // neu bit bang 1 thi nhan vao ket qua
             if ((limb >> bit) & 1) {
                 res = (res * base) % mod;
             }
-            if (i == exp.limbs.size() - 1 && limb == 0) break; 
-
-            // base = base^2 % mod
+            if (i == exp.limbs.size() - 1 && limb == 0) break;
             base = (base * base) % mod;
         }
     }
     return res;
+}
+
+// tim nghich dao modulo (dinh ly fermat nho)
+// a^(p-2) mod p
+BigInt modInverse(BigInt a, BigInt p) {
+    return power(a, p - BigInt(2), p);
 }
 
 int main(int argc, char* argv[]) {
@@ -201,31 +208,35 @@ int main(int argc, char* argv[]) {
         cerr << "khong mo duoc file input" << endl;
         return 1;
     }
-
     ofstream fout(outputPath);
     if (!fout) {
         cerr << "khong mo duoc file output" << endl;
         return 1;
     }
 
-    string sP, sG, sA, sB;
-
-    if (fin >> sP >> sG >> sA >> sB) {
+    string sP, sG, sX, sC1, sC2;
+    if (fin >> sP >> sG >> sX >> sC1 >> sC2) {
         BigInt p = parseHexLittleEndian(sP);
         BigInt g = parseHexLittleEndian(sG);
-        BigInt a = parseHexLittleEndian(sA);
-        BigInt b = parseHexLittleEndian(sB);
+        BigInt x = parseHexLittleEndian(sX);
+        BigInt c1 = parseHexLittleEndian(sC1);
+        BigInt c2 = parseHexLittleEndian(sC2);
 
-        // Alice tinh A = g^a % p
-        BigInt A = power(g, a, p);
-        // Bob tinh B = g^b % p
-        BigInt B = power(g, b, p);
-        // tinh khoa chung K = B^a % p (hoac A^b)
-        BigInt K = power(B, a, p);
+        // h = g^x mod p
+        BigInt h = power(g, x, p);
 
-        fout << toHexLittleEndianString(A) << "\n";
-        fout << toHexLittleEndianString(B) << "\n";
-        fout << toHexLittleEndianString(K) << "\n";
+        // s = c1^x mod p
+        BigInt s = power(c1, x, p);
+        
+        // s^-1 mod p
+        // vi p la so nguyen to -> fermat nho: s^(p-2) mod p
+        BigInt s_inv = modInverse(s, p);
+
+        // m = c2 * s^-1 mod p
+        BigInt m = (c2 * s_inv) % p;
+
+        fout << toHexLittleEndianString(h) << "\n";
+        fout << toHexLittleEndianString(m) << "\n";
     }
 
     fin.close();
